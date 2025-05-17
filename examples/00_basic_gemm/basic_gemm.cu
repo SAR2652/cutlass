@@ -196,7 +196,7 @@ cudaError_t AllocateMatrix(float **matrix, int rows, int columns, int seed = 0) 
   size_t sizeof_matrix = sizeof(float) * rows * columns;
 
   // Allocate device memory.
-  result = cudaMalloc(reinterpret_cast<void **>(&matrix), sizeof_matrix);
+  result = cudaMalloc(reinterpret_cast<void **>(matrix), sizeof_matrix);
 
   if (result != cudaSuccess) {
     std::cerr << "Failed to allocate matrix: "
