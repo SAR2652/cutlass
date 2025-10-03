@@ -341,7 +341,7 @@ class GemmOperation:
     Get the tile shape passed to the collective builder.
     On Blackwell, this is different than the operation.tile_description.tile_shape.
     """
-    is_sm100_kernel = (self.arch == 100)
+    is_sm100_kernel = (self.arch == 100 or self.arch == 103)
     if not is_sm100_kernel:
       return self.tile_description.tile_shape
 
@@ -355,6 +355,10 @@ class GemmOperation:
 
   # Generates the full kernel function name
   def procedural_name(self):
+    return self._procedural_name
+
+  @functools.cached_property
+  def _procedural_name(self):
     ''' The full procedural name indicates architecture, extended name, tile size, and layout. '''
     opcode_class_name = OpcodeClassNames[self.tile_description.math_instruction.opcode_class]
     if self.arch >= 90:
@@ -981,19 +985,48 @@ ${compile_guard_end}
     epilogue_schedule_type = EpilogueScheduleTag[operation.epilogue_schedule]
     
     if opcode_class_main == OpcodeClass.BlockScaledTensorOp:
-      is_no_smem_epilogue = operation.epilogue_schedule in [EpilogueScheduleType.NoSmemWarpSpecialized1Sm, EpilogueScheduleType.NoSmemWarpSpecialized2Sm]
       grouped = is_grouped(operation.gemm_kind)
       if cta_n == 256 and operation.kernel_schedule == to_grouped_schedule(KernelScheduleType.Nvf4TmaWarpSpecialized1SmSm100, grouped):
         epi_tile_mn = "cute::Shape<cute::_128,cute::_64>"
-        if not is_no_smem_epilogue:
+        if is_tma_epilogue(operation.epilogue_schedule):
           epilogue_schedule_type = EpilogueScheduleTag[to_grouped_schedule(EpilogueScheduleType.TmaWarpSpecialized1Sm, grouped)]
       if cta_n == 256 and operation.kernel_schedule == to_grouped_schedule(KernelScheduleType.Nvf4TmaWarpSpecialized2SmSm100, grouped):
         epi_tile_mn = "cute::Shape<cute::_128,cute::_64>"
-        if not is_no_smem_epilogue:
+        if is_tma_epilogue(operation.epilogue_schedule):
           epilogue_schedule_type = EpilogueScheduleTag[to_grouped_schedule(EpilogueScheduleType.TmaWarpSpecialized2Sm, grouped)]
+      # SM103 FP4 Ultra
+      is_sm103_fp4_ultra_1sm_kernel_schedule = operation.kernel_schedule in [to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized1SmVs32Sm103, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized1SmVs16Sm103, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized1SmVs32Sm103DisablePrefetch, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized1SmVs16Sm103DisablePrefetch, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized1SmVs32Sm103TmaPrefetch, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized1SmVs16Sm103TmaPrefetch, grouped)
+                                                                             ]
+      is_sm103_fp4_ultra_2sm_kernel_schedule = operation.kernel_schedule in [to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized2SmVs32Sm103, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized2SmVs16Sm103, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized2SmVs32Sm103DisablePrefetch, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized2SmVs16Sm103DisablePrefetch, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized2SmVs32Sm103TmaPrefetch, grouped),
+                                                                             to_grouped_schedule(KernelScheduleType.MxNvf4UltraTmaWarpSpecialized2SmVs16Sm103TmaPrefetch, grouped)
+                                                                             ]
+      if cta_n == 256 and is_sm103_fp4_ultra_1sm_kernel_schedule:
+        epi_tile_mn = "cute::Shape<cute::_128,cute::_64>"
+        if is_tma_epilogue(operation.epilogue_schedule):
+          epilogue_schedule_type = EpilogueScheduleTag[to_grouped_schedule(EpilogueScheduleType.TmaWarpSpecialized1Sm, grouped)]
+      if cta_n == 256 and is_sm103_fp4_ultra_2sm_kernel_schedule:
+        epi_tile_mn = "cute::Shape<cute::_128,cute::_64>"
+        if is_tma_epilogue(operation.epilogue_schedule):
+          epilogue_schedule_type = EpilogueScheduleTag[to_grouped_schedule(EpilogueScheduleType.TmaWarpSpecialized2Sm, grouped)]
+
       element_a = f'cute::tuple<{str(element_a)},{str(DataTypeTag[operation.ScaleFactorA])}>'
       element_b = f'cute::tuple<{str(element_b)},{str(DataTypeTag[operation.ScaleFactorB])}>'
 
+    alignment_c = get_tma_alignment(operation.C.element) \
+                  if is_tma_epilogue(operation.epilogue_schedule) and opcode_class_epi != OpcodeClass.Simt \
+                  else operation.C.alignment
+    alignment_d = get_tma_alignment(operation.D.element) \
+                  if is_tma_epilogue(operation.epilogue_schedule) and opcode_class_epi != OpcodeClass.Simt \
+                  else operation.D.alignment
 
     operation_name_str = operation.procedural_name()
     layout_a_str = LayoutTag[instance_layout_A]
@@ -1103,8 +1136,8 @@ using {operation_name_str}_LayoutSFB = decltype({operation_name_str}_ScaleConfig
       'stages': stage_count_string,
       'align_a': str(operation.A.alignment),
       'align_b': str(operation.B.alignment),
-      'align_c': str(operation.C.alignment),
-      'align_d': str(operation.C.alignment),
+      'align_c': str(alignment_c),
+      'align_d': str(alignment_d),
       'transform_a': ComplexTransformTag[operation.A.complex_transform],
       'transform_b': ComplexTransformTag[operation.B.complex_transform],
       'math_operation': MathOperationTag[operation.tile_description.math_instruction.math_operation],

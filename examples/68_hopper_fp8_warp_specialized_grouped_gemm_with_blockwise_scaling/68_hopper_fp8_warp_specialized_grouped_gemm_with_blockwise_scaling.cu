@@ -145,7 +145,7 @@ using ScaleConfig   = cutlass::detail::Sm90BlockwiseScaleConfig<ScaleGranularity
 using LayoutSFA     = decltype(ScaleConfig::deduce_layoutSFA());    // Layout type for SFA matrix operand
 using LayoutSFB     = decltype(ScaleConfig::deduce_layoutSFB());    // Layout type for SFB matrix operand
 
-using KernelSchedule    = cutlass::gemm::KernelPtrArrayTmaWarpSpecializedCooperativeFP8BlockScaledAccum;
+using KernelSchedule    = cutlass::gemm::KernelPtrArrayTmaWarpSpecializedCooperativeFP8Blockwise;
 using EpilogueSchedule  = cutlass::epilogue::PtrArrayTmaWarpSpecializedCooperative;
 using EpilogueTileType  = cutlass::epilogue::collective::EpilogueTileAuto;
 using FusionOperation   = cutlass::epilogue::fusion::LinearCombination<ElementC, ElementAccumulator>;
@@ -249,8 +249,6 @@ cutlass::DeviceAllocation<ElementAccumulator> block_beta;
 /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Testbed utility types
 /////////////////////////////////////////////////////////////////////////////////////////////////
-
-using RasterOrderOptions = typename cutlass::gemm::kernel::detail::PersistentTileSchedulerSm90GroupParams<Shape<int,int,int>>::RasterOrderOptions;
 
 /// Result structure
 struct Result
@@ -404,12 +402,37 @@ void initialize(const OptionType &options) {
   beta_host.clear();
 
   for (int i = 0; i < options.groups; i++) {
-    ptr_A_host.at(i) = block_A.get() + offset_A.at(i);
-    ptr_B_host.at(i) = block_B.get() + offset_B.at(i);
-    ptr_C_host.at(i) = block_C.get() + offset_C.at(i);
-    ptr_D_host.at(i) = block_D.get() + offset_D.at(i);
-    ptr_blockscale_A_host.at(i) = blockscale_block_A.get() + offset_blockscale_A.at(i);
-    ptr_blockscale_B_host.at(i) = blockscale_block_B.get() + offset_blockscale_B.at(i);
+    // If the current group's matrix has size 0, set the pointer to nullptr
+    if (i < options.groups - 1 && offset_A.at(i) == offset_A.at(i + 1)) {
+      ptr_A_host.at(i) = nullptr;
+    } else {
+      ptr_A_host.at(i) = block_A.get() + offset_A.at(i);
+    }
+    if (i < options.groups - 1 && offset_B.at(i) == offset_B.at(i + 1)) {
+      ptr_B_host.at(i) = nullptr;
+    } else {
+      ptr_B_host.at(i) = block_B.get() + offset_B.at(i);
+    }
+    if (i < options.groups - 1 && offset_C.at(i) == offset_C.at(i + 1)) {
+      ptr_C_host.at(i) = nullptr;
+    } else {
+      ptr_C_host.at(i) = block_C.get() + offset_C.at(i);
+    }
+    if (i < options.groups - 1 && offset_D.at(i) == offset_D.at(i + 1)) {
+      ptr_D_host.at(i) = nullptr;
+    } else {
+      ptr_D_host.at(i) = block_D.get() + offset_D.at(i);
+    }
+    if (i < options.groups - 1 && offset_blockscale_A.at(i) == offset_blockscale_A.at(i + 1)) {
+      ptr_blockscale_A_host.at(i) = nullptr;
+    } else {
+      ptr_blockscale_A_host.at(i) = blockscale_block_A.get() + offset_blockscale_A.at(i);
+    }
+    if (i < options.groups - 1 && offset_blockscale_B.at(i) == offset_blockscale_B.at(i + 1)) {
+      ptr_blockscale_B_host.at(i) = nullptr;
+    } else {
+      ptr_blockscale_B_host.at(i) = blockscale_block_B.get() + offset_blockscale_B.at(i);
+    }
     alpha_host.push_back((options.alpha == FLT_MAX) ? static_cast<ElementAccumulator>((rand() % 5) + 1) : options.alpha);
     beta_host.push_back((options.beta == FLT_MAX) ? static_cast<ElementAccumulator>(rand() % 5) : options.beta);
     ptr_alpha_host.at(i) = block_alpha.get() + i;
@@ -518,7 +541,7 @@ GemmArguments args_from_options(const OptionType &options, bool host_problem_sha
     fusion_args.dBeta = {cute::_0{}, cute::_0{}, 1};
   }
 
-  arguments.scheduler.raster_order = options.raster;
+  arguments.scheduler.raster_order = options.raster_order;
   // The tile scheduler will swizzle up to 8 and with the nearest multiple of 2 (i.e., 1, 2, 4, and 8)
   arguments.scheduler.max_swizzle_size = options.swizzle;
 
@@ -548,10 +571,10 @@ bool verify(const OptionType &options) {
   blockscale_block_B.copy_to_host(blockscale_block_B_host.data());
 
   bool passed = true;
+  std::cout << "  Running host reference kernel - may run for a while for large problems." << std::endl;
   for (int group_idx = 0; group_idx < options.groups; group_idx++) {
     // Group scaling tensors shapes based `ScaleGranularityM`, CTA Block (TileShape) and GEMM Problem shape
     auto [m, n, k] = options.problem_sizes_host.at(group_idx);
-    auto gemm_problem_shape = cute::make_shape(m, n, k);
 
     // Create instantiation for device reference gemm kernel
     auto A = cute::make_tensor(block_A_host.data() + offset_A.at(group_idx),
@@ -600,11 +623,7 @@ bool verify(const OptionType &options) {
         ElementAccumulator,
         ElementCompute,
         decltype(C),
-        decltype(D),
-        unused_t, // bias
-        unused_t, // Aux
-        unused_t, // valpha
-        unused_t  // vbeta
+        decltype(D)
     > epilogue_params;
 
     epilogue_params.C = C;
@@ -641,6 +660,24 @@ int run(OptionType &options, bool host_problem_shapes_available = true)
   allocate(options);
   initialize(options);
 
+  std::cout << "  Problem Sizes, Alpha, Beta " << std::endl;
+  for (int32_t i = 0; i < options.groups; ++i) {
+    std::cout << "    " << options.problem_sizes_host.at(i);
+    std::cout << ", " << alpha_host.at(i) << ", " << beta_host.at(i) << std::endl;
+  }
+  std::cout << "  Groups      : " << options.groups  << std::endl;
+  std::cout << "  Tile shape (M, N, K): " << size<0>(TileShape{}) << ", " << size<1>(TileShape{}) << ", " << size<2>(TileShape{}) << std::endl;
+  std::cout << "  ScaleGranularityM: " << ScaleGranularityM << " (ScaleMsPerTile: " << ScaleMsPerTile << ")" << std::endl;
+  std::cout << "  ScaleGranularityN: " << ScaleGranularityN << " (ScaleNsPerTile: " << ScaleNsPerTile << ")" << std::endl;
+  std::string raster = "Heuristic";
+  if (options.raster_order == RasterOrderOptions::AlongN) {
+    raster = "Along N";
+  }
+  else if (options.raster_order == RasterOrderOptions::AlongM) {
+    raster = "Along M";
+  }
+  std::cout << "  Rasterization: " << raster << " with a maximum CTA swizzle of " << options.swizzle << std::endl;
+
   // Instantiate CUTLASS kernel depending on templates
   Gemm gemm;
 
@@ -673,8 +710,7 @@ int run(OptionType &options, bool host_problem_shapes_available = true)
   }
 
   // Run profiling loop
-  if (options.iterations > 0)
-  {
+  if (options.iterations > 0) {
     GpuTimer timer;
     timer.start();
     for (int iter = 0; iter < options.iterations; ++iter) {
@@ -688,25 +724,6 @@ int run(OptionType &options, bool host_problem_shapes_available = true)
     result.avg_runtime_ms = double(elapsed_ms) / double(options.iterations);
     result.gflops = options.gflops(result.avg_runtime_ms / 1000.0);
 
-    std::string raster = "Heuristic";
-
-    if (options.raster == RasterOrderOptions::AlongN) {
-      raster = "Along N";
-    }
-    else if (options.raster == RasterOrderOptions::AlongM) {
-      raster = "Along M";
-    }
-
-    std::cout << "  Problem Sizes, Alpha, Beta " << std::endl;
-    for (int32_t i = 0; i < options.groups; ++i) {
-      std::cout << "    " << options.problem_sizes_host.at(i);
-      std::cout << ", " << alpha_host.at(i) << ", " << beta_host.at(i) << std::endl;
-    }
-    std::cout << "  Groups      : " << options.groups  << std::endl;
-    std::cout << "  Tile shape (M, N, K): " << size<0>(TileShape{}) << ", " << size<1>(TileShape{}) << ", " << size<2>(TileShape{}) << std::endl;
-    std::cout << "  ScaleGranularityM: " << ScaleGranularityM << " (ScaleMsPerTile: " << ScaleMsPerTile << ")" << std::endl;
-    std::cout << "  ScaleGranularityN: " << ScaleGranularityN << " (ScaleNsPerTile: " << ScaleNsPerTile << ")" << std::endl;
-    std::cout << "  Rasterization: " << raster << " with a maximum CTA swizzle of " << options.swizzle << std::endl;
     std::cout << "  Avg runtime: " << result.avg_runtime_ms << " ms" << std::endl;
     std::cout << "  GFLOPS: " << result.gflops << std::endl;
     fflush(stdout);
@@ -747,7 +764,7 @@ int main(int argc, char const **args) {
   // Parse options
   //
 
-  Options<RasterOrderOptions, ProblemShape> options;
+  Options<ProblemShape> options;
 
   options.parse(argc, args);
 

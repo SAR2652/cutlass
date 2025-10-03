@@ -45,9 +45,9 @@
 #include "cutlass/epilogue/thread/linear_combination_bias_elementwise.h"
 #include "cutlass/epilogue/fusion/callbacks.hpp"
 #include "cutlass/epilogue/fusion/sm90_callbacks_tma_warpspecialized.hpp"
-
+#include "cutlass/cutlass.h"
 #if defined(__CUDACC_RTC__)
-#include <cuda/std/type_traits>
+#include CUDA_STD_HEADER(type_traits)
 #else
 #include <type_traits>
 #endif
@@ -293,6 +293,9 @@ template <
   class DispatchPolicy
 >
 struct Sm90TmaBuilderImpl {
+  // C/D should meet TMA alignment requirement if not void
+  static_assert(detail::is_aligned<ElementC_, AlignmentC, ElementD_, AlignmentD>(),
+                "C/D Should meet TMA alignment requirement\n");
   // Passing void D disables destination store + smem allocation
   using ElementD = cute::conditional_t<cute::is_void_v<ElementD_>,
                      fusion::get_element_aux_t<FusionOpOrCallbacks>, ElementD_>;

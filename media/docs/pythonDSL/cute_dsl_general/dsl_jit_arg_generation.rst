@@ -2,12 +2,9 @@
 .. |DSL| replace:: CuTe DSL
 .. |CUSTOM_TYPES| replace:: customized types
 
-|DSL| JIT Function Argument Generation
+JIT Function Argument Generation
 =======================================
 
-.. contents:: Table of Contents
-   :depth: 2
-   :local:
 
 In a nutshell
 --------------
@@ -39,7 +36,7 @@ By default, |DSL| assumes dynamic arguments and tries to infer the argument type
     import cutlass.cute as cute
 
     @cute.jit
-    def foo(x: cutlass.Int32, y: cute.Constexpr):
+    def foo(x: cutlass.Int32, y: cutlass.Constexpr):
         print("x = ", x)        # Prints x = ?
         print("y = ", y)        # Prints y = 2
         cute.printf("x: {}", x) # Prints x: 2
@@ -127,7 +124,7 @@ JIT function arguments with |CUSTOM_TYPES|
     - ``__extract_mlir_values__``: Generate a dynamic expression for the current object.
     - ``__new_from_mlir_values__``: Create a new object from MLIR values.
 
-Refer to `typing.py <https://github.com/NVIDIA/cutlass/tree/main/python/CuTeDSL/base_dsl/typing.py>`__ for more details on these protocol APIs.
+Refer to `typing.py <https://github.com/NVIDIA/cutlass/tree/main/python/CuTeDSL/cutlass/base_dsl/typing.py>`__ for more details on these protocol APIs.
 
 Depending on different cases of the |CUSTOM_TYPES|, |DSL| provides easy ways to adopt |CUSTOM_TYPES| for JIT function arguments.
 
