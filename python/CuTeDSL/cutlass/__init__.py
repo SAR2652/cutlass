@@ -9,15 +9,18 @@
 # and related documentation outside the scope permitted by the EULA
 # is strictly prohibited.
 
+from ._mlir._mlir_libs import _cutlass_ir
+
+_cutlass_ir.populate(_cutlass_ir)
+
 from .cutlass_dsl import (
     Constexpr,
+    dsl_user_op,
     as_numeric,
     min,
     max,
     and_,
     or_,
-    all_,
-    any_,
     not_,
     all_,
     any_,
@@ -29,6 +32,7 @@ from .cutlass_dsl import (
     while_generate,
     yield_out,
     # Control-flow with AST pre-processor
+    range,
     range_constexpr,
     range_dynamic,
     const_expr,
@@ -46,6 +50,7 @@ from .cute.typing import *
 
 # Utilities not belonging to CuTe
 from . import utils as utils
+from . import pipeline as pipeline
 
 # Used as internal symbol
 from . import cutlass_dsl as _dsl
